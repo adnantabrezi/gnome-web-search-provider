@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="web-search-provider">
+
+  <schema id="org.gnome.shell.extensions.websearch"
+          path="/org/gnome/shell/extensions/websearch/">
+
+    <key name="engine" type="s">
+      <default>'brave'</default>
+      <summary>Search engine</summary>
+      <description>
+        Identifier of the search engine used for the "search for …" result:
+        brave, google, duckduckgo, bing, startpage, ecosia, qwant, wikipedia
+        or custom.
+      </description>
+    </key>
+
+    <key name="custom-url" type="s">
+      <default>''</default>
+      <summary>Custom search URL</summary>
+      <description>
+        URL template used when the engine is set to "custom". Use {query}
+        where the search terms should be inserted; if the placeholder is
+        absent the terms are appended.
+      </description>
+    </key>
+
+    <key name="search-results" type="b">
+      <default>true</default>
+      <summary>Show the search action</summary>
+      <description>
+        Whether a "search for …" action is offered for the typed query.
+      </description>
+    </key>
+
+    <key name="bookmarks" type="b">
+      <default>true</default>
+      <summary>Include bookmarks</summary>
+      <description>Whether matching browser bookmarks appear as results.</description>
+    </key>
+
+    <key name="history" type="b">
+      <default>true</default>
+      <summary>Include history</summary>
+      <description>Whether matching browser history entries appear as results.</description>
+    </key>
+
+    <key name="max-bookmarks" type="i">
+      <default>3</default>
+      <range min="0" max="10"/>
+      <summary>Maximum bookmarks</summary>
+      <description>Maximum number of bookmark results to show.</description>
+    </key>
+
+    <key name="max-history" type="i">
+      <default>4</default>
+      <range min="0" max="10"/>
+      <summary>Maximum history entries</summary>
+      <description>Maximum number of history results to show.</description>
+    </key>
+
+  </schema>
+
+</schemalist>

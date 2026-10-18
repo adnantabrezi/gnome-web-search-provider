@@ -3,3 +3,8 @@ __pycache__/
 *.swp
 .DS_Store
 config.json
+
+# build artefacts
+dist/
+*.shell-extension.zip
+extension/schemas/gschemas.compiled

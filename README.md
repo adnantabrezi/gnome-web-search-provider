@@ -10,10 +10,18 @@ Type a query in Activities and you get:
 - a fallback **“<engine> search for …”** action that opens your chosen engine,
 - all of it reorderable/toggleable in **Settings → Search**.
 
-> **This is *not* a GNOME Shell extension.** It is implemented as an
-> *external* search provider (D-Bus service + `search-provider.ini` + a
-> `.desktop` file). That is intentional: external providers are the only kind
-> that appear in **Settings → Search**, which is what lets you prioritise them.
+> **Two flavours — install one.**
+>
+> * **[`extension/`](extension/) — a real GNOME Shell extension.** Preferences
+>   live in the **Extensions** app (gear button), and it can be published on
+>   [extensions.gnome.org](https://extensions.gnome.org). It *cannot* appear in
+>   **Settings → Search**.
+> * **`src/` + `data/` — an external D-Bus search provider.** This is the only
+>   kind that shows up in **Settings → Search** (so you can reorder it), but it
+>   has no preferences hook in the Extensions app — hence the small standalone
+>   settings app.
+>
+> Don't enable both at once: every query would then be answered twice.
 
 ---
 
@@ -43,7 +51,25 @@ Type a query in Activities and you get:
 
 ---
 
-## Install
+## Extension (GNOME Extensions / extensions.gnome.org)
+
+A self-contained Shell extension lives in [`extension/`](extension/). It adds
+the same results to the overview search and puts its **preferences in the
+Extensions app** (gear button) — no standalone app involved.
+
+```bash
+./build-extension.sh          # -> dist/web-search-provider@adnantabrezi.github.com.shell-extension.zip
+gnome-extensions install --force dist/web-search-provider@adnantabrezi.github.com.shell-extension.zip
+```
+
+Log out/in (Wayland), then enable **Web Search** in the Extensions app. See
+[`extension/README.md`](extension/README.md) for the full details and the
+extensions.gnome.org upload steps.
+
+**Trade-off:** a Shell extension cannot be listed under **Settings → Search**,
+and running it alongside the provider below produces duplicate results.
+
+## Provider install (appears in Settings → Search)
 
 ```bash
 git clone https://github.com/adnantabrezi/gnome-web-search-provider.git
@@ -163,8 +189,16 @@ The Shell only scans **system** data dirs for `gnome-shell/search-providers`
 
 ## Uninstall
 
+For the external provider:
+
 ```bash
 sudo ./uninstall.sh
+```
+
+For the extension:
+
+```bash
+gnome-extensions uninstall web-search-provider@adnantabrezi.github.com
 ```
 
 ---

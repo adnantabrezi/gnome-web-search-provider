@@ -1,0 +1,16 @@
+{
+    "uuid": "web-search-provider@adnantabrezi.github.com",
+    "name": "Web Search",
+    "description": "Search the web from the Activities overview (Brave, Google, DuckDuckGo, …) and see matching browser bookmarks and history as results.",
+    "shell-version": [
+        "45",
+        "46",
+        "47",
+        "48",
+        "49",
+        "50",
+        "51"
+    ],
+    "settings-schema": "org.gnome.shell.extensions.websearch",
+    "url": "https://github.com/adnantabrezi/gnome-web-search-provider"
+}
