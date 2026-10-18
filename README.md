@@ -83,6 +83,32 @@ place; this lets the Shell pick up the new provider).
 After that, open **Settings → Search → Search Results** and drag
 **Web Search** to the top.
 
+### Install from a release (no git)
+
+```bash
+curl -L -o /tmp/wsp.tar.gz \
+  https://github.com/adnantabrezi/gnome-web-search-provider/releases/latest/download/web-search-provider-1.0.0.tar.gz
+tar -xzf /tmp/wsp.tar.gz -C /tmp
+sudo /tmp/web-search-provider-1.0.0/install.sh
+```
+
+### Arch Linux (AUR)
+
+[`packaging/aur/PKGBUILD`](packaging/aur/PKGBUILD) builds the same files into
+`/usr` from the release tarball:
+
+```bash
+yay -S gnome-web-search-provider      # once published to the AUR
+```
+
+or build it yourself:
+
+```bash
+git clone https://github.com/adnantabrezi/gnome-web-search-provider.git
+cd gnome-web-search-provider/packaging/aur
+makepkg -si
+```
+
 ### Manual install
 
 ```bash

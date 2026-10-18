@@ -1,0 +1,40 @@
+# Maintainer: Adnan Tabrezi <adnantabrezi@users.noreply.github.com>
+pkgname=gnome-web-search-provider
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="GNOME Shell overview search provider for web search (Brave), bookmarks and history"
+arch=('any')
+url="https://github.com/adnantabrezi/gnome-web-search-provider"
+license=('MIT')
+depends=('gnome-shell' 'python-gobject')
+optdepends=('brave-browser: browser that opens web results and supplies bookmarks/history')
+provides=('brave-search-provider')
+conflicts=('brave-search-provider')
+install="$pkgname.install"
+_extractdir="web-search-provider-$pkgver"
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/web-search-provider-$pkgver.tar.gz")
+sha256sums=('3968cc891b7eb9c2d90505f2ef5c25388fdf742ecc46c590eb3dd2b5b564f4df')
+
+package() {
+  cd "$srcdir/$_extractdir"
+
+  install -Dm755 src/search-provider "$pkgdir/usr/bin/brave-search-provider"
+  install -Dm755 src/settings        "$pkgdir/usr/bin/brave-search-settings"
+
+  install -Dm644 data/io.github.adnan.BraveSearch.search-provider.ini \
+    "$pkgdir/usr/share/gnome-shell/search-providers/io.github.adnan.BraveSearch.search-provider.ini"
+  install -Dm644 data/io.github.adnan.BraveSearch.service \
+    "$pkgdir/usr/share/dbus-1/services/io.github.adnan.BraveSearch.service"
+  install -Dm644 data/io.github.adnan.BraveSearch.desktop \
+    "$pkgdir/usr/share/applications/io.github.adnan.BraveSearch.desktop"
+  install -Dm644 data/io.github.adnan.BraveSearch.Settings.desktop \
+    "$pkgdir/usr/share/applications/io.github.adnan.BraveSearch.Settings.desktop"
+
+  # /usr/local -> /usr (only the absolute Exec lines; 'Exec=brave' is untouched)
+  sed -i 's#^Exec=/usr/local/bin/#Exec=/usr/bin/#' \
+    "$pkgdir/usr/share/dbus-1/services/io.github.adnan.BraveSearch.service" \
+    "$pkgdir/usr/share/applications/io.github.adnan.BraveSearch.desktop" \
+    "$pkgdir/usr/share/applications/io.github.adnan.BraveSearch.Settings.desktop"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

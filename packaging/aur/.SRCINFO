@@ -1,0 +1,17 @@
+pkgbase = gnome-web-search-provider
+	pkgdesc = GNOME Shell overview search provider for web search (Brave), bookmarks and history
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/adnantabrezi/gnome-web-search-provider
+	install = gnome-web-search-provider.install
+	arch = any
+	license = MIT
+	depends = gnome-shell
+	depends = python-gobject
+	optdepends = brave-browser: browser that opens web results and supplies bookmarks/history
+	provides = brave-search-provider
+	conflicts = brave-search-provider
+	source = gnome-web-search-provider-1.0.0.tar.gz::https://github.com/adnantabrezi/gnome-web-search-provider/releases/download/v1.0.0/web-search-provider-1.0.0.tar.gz
+	sha256sums = 3968cc891b7eb9c2d90505f2ef5c25388fdf742ecc46c590eb3dd2b5b564f4df
+
+pkgname = gnome-web-search-provider

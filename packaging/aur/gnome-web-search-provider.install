@@ -1,0 +1,7 @@
+post_install() {
+  echo ">> Web Search provider installed."
+  echo ">> Log out and back in (or run: dbus-send --session --type=method_call \\"
+  echo ">>   --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig)"
+  echo ">> so GNOME Shell picks it up, then check Settings -> Search."
+}
+post_upgrade() { post_install; }
