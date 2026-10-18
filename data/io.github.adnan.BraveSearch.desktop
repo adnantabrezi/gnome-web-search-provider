@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Web Search
+GenericName=Web Search
+Comment=Search the web, bookmarks and history from the GNOME overview
+Exec=brave
+Icon=brave-desktop
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=false
+Actions=Settings;
+
+[Desktop Action Settings]
+Name=Settings
+Exec=/usr/local/bin/brave-search-settings

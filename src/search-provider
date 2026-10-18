@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""Web Search provider for GNOME Shell (search / bookmarks / history).
+
+Implements the org.gnome.Shell.SearchProvider2 D-Bus interface.
+
+For a given query it returns:
+  * matching browser bookmarks    (from <profile>/Bookmarks, JSON)
+  * matching browser history      (from <profile>/History, SQLite, read-only)
+  * a fallback "<Engine> search"  action
+
+The search engine and which sources are included are configured through the
+companion settings app (brave-search-settings) and stored in
+~/.config/brave-search-provider/config.json.
+
+Activation is triggered on demand by the session bus via
+io.github.adnan.BraveSearch.service.
+"""
+
+import glob
+import json
+import os
+import sqlite3
+import sys
+import urllib.parse
+
+import gi
+
+gi.require_version('Gio', '2.0')
+gi.require_version('GLib', '2.0')
+from gi.repository import Gio, GLib  # noqa: E402
+
+BUS_NAME = 'io.github.adnan.BraveSearch'
+OBJECT_PATH = '/io/github/adnan/BraveSearch'
+IFACE = 'org.gnome.Shell.SearchProvider2'
+
+# id -> (display name, url template, icon name)
+ENGINE_DEFS = {
+    'brave': ('Brave', 'https://search.brave.com/search?q=', 'brave-desktop'),
+    'google': ('Google', 'https://www.google.com/search?q=', 'web-browser-symbolic'),
+    'duckduckgo': ('DuckDuckGo', 'https://duckduckgo.com/?q=', 'web-browser-symbolic'),
+    'bing': ('Bing', 'https://www.bing.com/search?q=', 'web-browser-symbolic'),
+    'startpage': ('Startpage', 'https://www.startpage.com/sp/search?query=', 'web-browser-symbolic'),
+    'ecosia': ('Ecosia', 'https://www.ecosia.org/search?q=', 'web-browser-symbolic'),
+    'qwant': ('Qwant', 'https://www.qwant.com/?q=', 'web-browser-symbolic'),
+    'wikipedia': ('Wikipedia', 'https://en.wikipedia.org/w/index.php?search=', 'web-browser-symbolic'),
+    'custom': ('Custom', '', 'web-browser-symbolic'),
+}
+
+DEFAULT_CONFIG = {
+    'engine': 'brave',
+    'custom_url': '',
+    'search_results': True,
+    'bookmarks': True,
+    'history': True,
+    'max_bookmarks': 3,
+    'max_history': 4,
+}
+
+CONFIG_PATH = os.path.expanduser('~/.config/brave-search-provider/config.json')
+
+SEARCH_PREFIX = 'brave:'
+BOOKMARK_PREFIX = 'bookmark:'
+HISTORY_PREFIX = 'history:'
+
+BOOKMARK_ICON = 'user-bookmarks-symbolic'
+HISTORY_ICON = 'document-open-recent-symbolic'
+
+MAX_ROWS = 5          # GNOME shows max 5 rows per list provider
+MAX_URL_LEN = 2048    # skip absurdly long URLs (pasted blobs, data dumps)
+MAX_TEXT_LEN = 160    # max length of a displayed title/description
+
+SKIP_URL_PREFIXES = ('chrome://', 'chrome-extension://', 'devtools://', 'about:', 'brave://')
+# Search-result pages add noise when browsing history.
+SKIP_URL_PATTERNS = (
+    'search.brave.com/search?',
+    'google.com/search?',
+    'duckduckgo.com/?q=',
+    'bing.com/search?',
+    'search.yahoo.com/search?',
+    'youtube.com/results?search_query=',
+)
+
+# id -> (name, description, icon); populated during a search.
+_META_CACHE = {}
+
+XML = f"""
+<node>
+  <interface name="{IFACE}">
+    <method name="GetInitialResultSet">
+      <arg type="as" name="terms" direction="in"/>
+      <arg type="as" name="results" direction="out"/>
+    </method>
+    <method name="GetSubsearchResultSet">
+      <arg type="as" name="previous_results" direction="in"/>
+      <arg type="as" name="terms" direction="in"/>
+      <arg type="as" name="results" direction="out"/>
+    </method>
+    <method name="GetResultMetas">
+      <arg type="as" name="identifiers" direction="in"/>
+      <arg type="aa{{sv}}" name="metas" direction="out"/>
+    </method>
+    <method name="ActivateResult">
+      <arg type="s" name="identifier" direction="in"/>
+      <arg type="as" name="terms" direction="in"/>
+      <arg type="u" name="timestamp" direction="in"/>
+    </method>
+    <method name="LaunchSearch">
+      <arg type="as" name="terms" direction="in"/>
+      <arg type="u" name="timestamp" direction="in"/>
+    </method>
+  </interface>
+</node>
+"""
+
+node_info = Gio.DBusNodeInfo.new_for_xml(XML)
+iface_info = node_info.lookup_interface(IFACE)
+
+
+# --------------------------------------------------------------------------- #
+# Configuration
+# --------------------------------------------------------------------------- #
+
+def load_config():
+    config = dict(DEFAULT_CONFIG)
+    try:
+        with open(CONFIG_PATH, 'r', encoding='utf-8') as fh:
+            config.update(json.load(fh))
+    except (OSError, ValueError):
+        pass
+    return config
+
+
+def engine_template(config):
+    engine = config.get('engine', 'brave')
+    if engine == 'custom':
+        return config.get('custom_url') or ENGINE_DEFS['brave'][1]
+    return ENGINE_DEFS.get(engine, ENGINE_DEFS['brave'])[1]
+
+
+def engine_name_icon(config):
+    engine = config.get('engine', 'brave')
+    name, _url, icon = ENGINE_DEFS.get(engine, ENGINE_DEFS['brave'])
+    return name, icon
+
+
+def build_search_url(config, query):
+    template = engine_template(config)
+    encoded = urllib.parse.quote_plus(query)
+    if '{query}' in template:
+        return template.replace('{query}', encoded)
+    return template + encoded
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+def brave_profiles():
+    """Yield every Brave profile directory (Default, Profile 1, ...)."""
+    base = os.path.expanduser('~/.config/BraveSoftware')
+    for root in sorted(glob.glob(os.path.join(base, 'Brave-Browser*'))):
+        candidates = [os.path.join(root, 'Default')]
+        candidates += sorted(glob.glob(os.path.join(root, 'Profile *')))
+        for profile in candidates:
+            if os.path.isdir(profile):
+                yield profile
+
+
+def _like_pattern(term):
+    escaped = term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return f'%{escaped}%'
+
+
+def _shorten(text, limit=MAX_TEXT_LEN):
+    text = (text or '').strip()
+    return text if len(text) <= limit else text[:limit - 1] + '\u2026'
+
+
+def iter_bookmarks(path):
+    """Yield (name, url) for every bookmark in a Chromium Bookmarks file."""
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return
+
+    def walk(node):
+        if node.get('type') == 'url':
+            url = node.get('url')
+            if url:
+                yield (node.get('name') or url), url
+            return
+        for child in node.get('children') or []:
+            yield from walk(child)
+
+    for root in (data.get('roots') or {}).values():
+        if isinstance(root, dict):
+            yield from walk(root)
+
+
+def query_history(path, terms, limit):
+    """Return [(url, title), ...] matching all terms, newest first."""
+    if not terms or not os.path.exists(path):
+        return []
+
+    where = ' AND '.join(
+        "(url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\')" for _ in terms)
+    params = []
+    for term in terms:
+        pattern = _like_pattern(term)
+        params += [pattern, pattern]
+
+    sql = (f'SELECT url, title FROM urls WHERE {where} '
+           f'ORDER BY last_visit_time DESC LIMIT ?')
+    params.append(limit)
+
+    try:
+        # immutable=1 allows read-only access while the browser holds the DB.
+        con = sqlite3.connect(f'file:{path}?immutable=1', uri=True, timeout=1)
+    except sqlite3.Error:
+        return []
+
+    try:
+        return [(row[0], row[1]) for row in con.execute(sql, params)]
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+
+
+def _skip_url(url):
+    if not url or url.startswith(SKIP_URL_PREFIXES) or len(url) > MAX_URL_LEN:
+        return True
+    return any(pattern in url for pattern in SKIP_URL_PATTERNS)
+
+
+def collect_results(terms):
+    """Build the ordered result list and refresh the meta cache."""
+    if not terms:
+        return []
+
+    config = load_config()
+    lower_terms = [t.lower() for t in terms if t]
+    query = ' '.join(terms).strip()
+
+    max_bookmarks = max(0, int(config.get('max_bookmarks', 3)))
+    max_history = max(0, int(config.get('max_history', 4)))
+
+    bookmarks = []
+    history = []
+    seen_urls = set()
+
+    def matches(haystack):
+        haystack = haystack.lower()
+        return all(term in haystack for term in lower_terms)
+
+    # --- bookmarks ---
+    if config.get('bookmarks', True) and max_bookmarks:
+        for profile in brave_profiles():
+            if len(bookmarks) >= max_bookmarks:
+                break
+            for name, url in iter_bookmarks(os.path.join(profile, 'Bookmarks')):
+                if url in seen_urls or not matches(f'{name} {url}'):
+                    continue
+                seen_urls.add(url)
+                bookmarks.append({'id': BOOKMARK_PREFIX + url, 'name': _shorten(name),
+                                  'description': _shorten(url), 'icon': BOOKMARK_ICON})
+                if len(bookmarks) >= max_bookmarks:
+                    break
+
+    # --- history ---
+    if config.get('history', True) and max_history:
+        for profile in brave_profiles():
+            if len(history) >= max_history:
+                break
+            rows = query_history(os.path.join(profile, 'History'),
+                                 lower_terms, max_history * 4)
+            for url, title in rows:
+                if url in seen_urls or _skip_url(url):
+                    continue
+                seen_urls.add(url)
+                history.append({'id': HISTORY_PREFIX + url,
+                                'name': _shorten(title or url),
+                                'description': _shorten(url), 'icon': HISTORY_ICON})
+                if len(history) >= max_history:
+                    break
+
+    # --- engine search action (one row is reserved for it) ---
+    search_enabled = config.get('search_results', True)
+    reserved = 1 if (query and search_enabled) else 0
+
+    results = (bookmarks + history)[:MAX_ROWS - reserved] if reserved else \
+        (bookmarks + history)[:MAX_ROWS]
+
+    if reserved:
+        engine_name, engine_icon = engine_name_icon(config)
+        host = urllib.parse.urlparse(engine_template(config)).netloc or 'your browser'
+        results.append({'id': SEARCH_PREFIX + query,
+                        'name': f'{engine_name} search for \u201c{query}\u201d',
+                        'description': f'Open on {host}',
+                        'icon': engine_icon})
+
+    _META_CACHE.clear()
+    for item in results:
+        _META_CACHE[item['id']] = (item['name'], item['description'], item['icon'])
+
+    return [item['id'] for item in results]
+
+
+# --------------------------------------------------------------------------- #
+# Actions
+# --------------------------------------------------------------------------- #
+
+def open_uri(uri):
+    if not uri:
+        return
+    try:
+        Gio.AppInfo.launch_default_for_uri(uri, None)
+    except GLib.Error as err:
+        print(f'Failed to open {uri}: {err}', file=sys.stderr)
+
+
+def fallback_meta(identifier, config):
+    if identifier.startswith(BOOKMARK_PREFIX):
+        url = identifier[len(BOOKMARK_PREFIX):]
+        return (url, url, BOOKMARK_ICON)
+    if identifier.startswith(HISTORY_PREFIX):
+        url = identifier[len(HISTORY_PREFIX):]
+        return (url, url, HISTORY_ICON)
+    query = query_from_id(identifier)
+    name, icon = engine_name_icon(config)
+    return (f'{name} search for \u201c{query}\u201d', 'Open in your browser', icon)
+
+
+def query_from_id(identifier):
+    return identifier[len(SEARCH_PREFIX):] if identifier.startswith(SEARCH_PREFIX) else identifier
+
+
+# --------------------------------------------------------------------------- #
+# D-Bus plumbing
+# --------------------------------------------------------------------------- #
+
+def on_method_call(_connection, _sender, _path, _iface, method_name, parameters, invocation):
+    try:
+        if method_name in ('GetInitialResultSet', 'GetSubsearchResultSet'):
+            if method_name == 'GetInitialResultSet':
+                [terms] = parameters.unpack()
+            else:
+                _previous, terms = parameters.unpack()
+            invocation.return_value(GLib.Variant('(as)', (collect_results(terms),)))
+
+        elif method_name == 'GetResultMetas':
+            [identifiers] = parameters.unpack()
+            config = load_config()
+            metas = []
+            for identifier in identifiers:
+                name, description, icon = _META_CACHE.get(
+                    identifier, fallback_meta(identifier, config))
+                metas.append({
+                    'id': GLib.Variant('s', identifier),
+                    'name': GLib.Variant('s', name),
+                    'description': GLib.Variant('s', description),
+                    'gicon': GLib.Variant('s', icon),
+                })
+            invocation.return_value(GLib.Variant('(aa{sv})', (metas,)))
+
+        elif method_name == 'ActivateResult':
+            identifier, terms, _timestamp = parameters.unpack()
+            if identifier.startswith((BOOKMARK_PREFIX, HISTORY_PREFIX)):
+                open_uri(identifier.split(':', 1)[1])
+            else:
+                # Prefer freshly typed terms: GNOME may activate a stale id
+                # when Enter is pressed before the search settles.
+                query = ' '.join(terms).strip() or query_from_id(identifier)
+                open_uri(build_search_url(load_config(), query) if query else '')
+            invocation.return_value(None)
+
+        elif method_name == 'LaunchSearch':
+            terms, _timestamp = parameters.unpack()
+            query = ' '.join(terms).strip()
+            open_uri(build_search_url(load_config(), query) if query else '')
+            invocation.return_value(None)
+
+        else:
+            invocation.return_value(None)
+    except Exception as err:  # noqa: BLE001
+        print(f'Error handling {method_name}: {err}', file=sys.stderr)
+        invocation.return_value(None)
+
+
+def on_bus_acquired(connection, _name):
+    connection.register_object(OBJECT_PATH, iface_info, on_method_call, None, None)
+
+
+def on_name_lost(_connection, _name):
+    print('Lost bus name; exiting.', file=sys.stderr)
+    sys.exit(1)
+
+
+def main():
+    loop = GLib.MainLoop()
+    Gio.bus_own_name(
+        Gio.BusType.SESSION,
+        BUS_NAME,
+        Gio.BusNameOwnerFlags.NONE,
+        on_bus_acquired,
+        None,
+        on_name_lost,
+    )
+    loop.run()
+
+
+if __name__ == '__main__':
+    main()

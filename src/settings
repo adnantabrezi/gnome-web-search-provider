@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""Preferences for the GNOME web search provider.
+
+A small libadwaita app to choose the default search engine and toggle which
+sources (search action / bookmarks / history) appear in the overview search.
+Configuration is shared with brave-search-provider via
+~/.config/brave-search-provider/config.json.
+"""
+
+import json
+import os
+import sys
+
+import gi
+
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Adw, Gio, Gtk  # noqa: E402
+
+APP_ID = 'io.github.adnan.BraveSearch.Settings'
+
+CONFIG_DIR = os.path.expanduser('~/.config/brave-search-provider')
+CONFIG_PATH = os.path.join(CONFIG_DIR, 'config.json')
+
+# Ordered list of (id, display name); keep in sync with the provider.
+ENGINES = [
+    ('brave', 'Brave'),
+    ('google', 'Google'),
+    ('duckduckgo', 'DuckDuckGo'),
+    ('bing', 'Bing'),
+    ('startpage', 'Startpage'),
+    ('ecosia', 'Ecosia'),
+    ('qwant', 'Qwant'),
+    ('wikipedia', 'Wikipedia'),
+    ('custom', 'Custom URL'),
+]
+ENGINE_IDS = [engine_id for engine_id, _ in ENGINES]
+
+DEFAULT_CONFIG = {
+    'engine': 'brave',
+    'custom_url': '',
+    'search_results': True,
+    'bookmarks': True,
+    'history': True,
+    'max_bookmarks': 3,
+    'max_history': 4,
+}
+
+
+def load_config():
+    config = dict(DEFAULT_CONFIG)
+    try:
+        with open(CONFIG_PATH, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            config.update(data)
+    except (OSError, ValueError):
+        pass
+    return config
+
+
+def save_config(config):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    tmp_path = CONFIG_PATH + '.tmp'
+    with open(tmp_path, 'w', encoding='utf-8') as fh:
+        json.dump(config, fh, indent=2, sort_keys=True)
+    os.replace(tmp_path, CONFIG_PATH)
+
+
+class SettingsWindow(Adw.ApplicationWindow):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.config = load_config()
+        self._loading = True
+
+        self.set_title('Web Search')
+        self.set_default_size(520, 700)
+
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(Adw.HeaderBar())
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+        toolbar_view.set_content(scrolled)
+
+        self.set_content(toolbar_view)
+
+        page = Adw.PreferencesPage(
+            title='Search', icon_name='system-search-symbolic')
+        scrolled.set_child(page)
+
+        # --- engine ---------------------------------------------------- #
+        general = Adw.PreferencesGroup(
+            title='Search engine',
+            description='Used for the fallback search result and for '
+                        'Launch Search in the overview.')
+        page.add(general)
+
+        self.engine_row = Adw.ComboRow(
+            title='Default search engine',
+            model=Gtk.StringList.new([name for _, name in ENGINES]))
+        try:
+            self.engine_row.set_selected(ENGINE_IDS.index(self.config['engine']))
+        except ValueError:
+            self.engine_row.set_selected(0)
+        self.engine_row.connect('notify::selected', self._on_engine_changed)
+        general.add(self.engine_row)
+
+        self.custom_row = Adw.EntryRow(title='Custom search URL')
+        self.custom_row.set_tooltip_text(
+            'Use {query} where the search terms should go. If omitted, '
+            'the terms are appended.')
+        self.custom_row.set_text(self.config.get('custom_url', ''))
+        self.custom_row.set_visible(self._current_engine() == 'custom')
+        self.custom_row.connect('changed', self._on_custom_url_changed)
+        general.add(self.custom_row)
+
+        # --- sources --------------------------------------------------- #
+        sources = Adw.PreferencesGroup(title='Show in overview search')
+        page.add(sources)
+
+        self.search_row = Adw.SwitchRow(
+            title='Search action',
+            subtitle='e.g. “Brave search for …”')
+        self._bind_switch(self.search_row, 'search_results')
+        sources.add(self.search_row)
+
+        self.bookmarks_row = Adw.SwitchRow(title='Bookmarks')
+        self._bind_switch(self.bookmarks_row, 'bookmarks')
+        sources.add(self.bookmarks_row)
+
+        self.history_row = Adw.SwitchRow(title='History')
+        self._bind_switch(self.history_row, 'history')
+        sources.add(self.history_row)
+
+        # --- amounts --------------------------------------------------- #
+        amounts = Adw.PreferencesGroup(title='Number of results')
+        page.add(amounts)
+
+        self.bookmarks_spin = self._make_spin(
+            'Bookmarks', 'max_bookmarks')
+        amounts.add(self.bookmarks_spin)
+
+        self.history_spin = self._make_spin(
+            'History', 'max_history')
+        amounts.add(self.history_spin)
+
+        # --- reset ----------------------------------------------------- #
+        reset_group = Adw.PreferencesGroup()
+        page.add(reset_group)
+        reset_row = Adw.ButtonRow(title='Reset to defaults')
+        reset_row.add_css_class('destructive-action')
+        reset_row.connect('activated', self._on_reset)
+        reset_group.add(reset_row)
+
+        self._loading = False
+
+    # ------------------------------------------------------------------ #
+
+    def _current_engine(self):
+        return ENGINE_IDS[self.engine_row.get_selected()]
+
+    def _bind_switch(self, row, key):
+        row.set_active(bool(self.config.get(key, DEFAULT_CONFIG[key])))
+        row.connect('notify::active', self._on_switch, key)
+
+    def _make_spin(self, title, key):
+        adjustment = Gtk.Adjustment(
+            value=int(self.config.get(key, DEFAULT_CONFIG[key])),
+            lower=0, upper=10, step_increment=1, page_increment=1)
+        row = Adw.SpinRow(title=title, adjustment=adjustment)
+        row.connect('notify::value', self._on_spin, key)
+        return row
+
+    def _save(self):
+        if not self._loading:
+            save_config(self.config)
+
+    # ------------------------------------------------------------------ #
+
+    def _on_engine_changed(self, *_args):
+        self.config['engine'] = self._current_engine()
+        self.custom_row.set_visible(self.config['engine'] == 'custom')
+        self._save()
+
+    def _on_custom_url_changed(self, row, *_args):
+        self.config['custom_url'] = row.get_text().strip()
+        self._save()
+
+    def _on_switch(self, row, _param, key):
+        self.config[key] = row.get_active()
+        self._save()
+
+    def _on_spin(self, row, _param, key):
+        self.config[key] = int(row.get_value())
+        self._save()
+
+    def _on_reset(self, *_args):
+        self.config = dict(DEFAULT_CONFIG)
+        self._loading = True
+        self.engine_row.set_selected(ENGINE_IDS.index(self.config['engine']))
+        self.custom_row.set_text(self.config['custom_url'])
+        self.custom_row.set_visible(self._current_engine() == 'custom')
+        self.search_row.set_active(self.config['search_results'])
+        self.bookmarks_row.set_active(self.config['bookmarks'])
+        self.history_row.set_active(self.config['history'])
+        self.bookmarks_spin.set_value(self.config['max_bookmarks'])
+        self.history_spin.set_value(self.config['max_history'])
+        self._loading = False
+        self._save()
+
+
+class SettingsApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID,
+                         flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+
+    def do_activate(self):
+        window = self.props.active_window
+        if window is None:
+            window = SettingsWindow(application=self)
+        window.present()
+
+
+def main():
+    return SettingsApp().run(sys.argv)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

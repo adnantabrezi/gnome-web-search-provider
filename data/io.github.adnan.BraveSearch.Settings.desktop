@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Web Search Settings
+Comment=Configure the GNOME overview web search provider
+Exec=/usr/local/bin/brave-search-settings
+Icon=preferences-system-symbolic
+Terminal=false
+Categories=Settings;DesktopSettings;
+StartupNotify=true
